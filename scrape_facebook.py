@@ -53,6 +53,16 @@ print(f"Fetching {url} ...")
 response = requests.get(url, cookies=cookies, headers=headers, timeout=30)
 response.raise_for_status()
 
+print(f"HTTP status: {response.status_code}")
+print(f"Response length: {len(response.text)} characters")
+lower_text = response.text.lower()
+print(f"Contains 'login': {'login' in lower_text}")
+print(f"Contains 'log in': {'log in' in lower_text}")
+print(f"Contains the page name '{PAGE_PATH.lower()}': {PAGE_PATH.lower() in lower_text}")
+print("---- First 2000 characters of response ----")
+print(response.text[:2000])
+print("---- End snippet ----")
+
 soup = BeautifulSoup(response.text, "html.parser")
 
 # ---- Parsing logic (this is the part most likely to need adjustment) ----
