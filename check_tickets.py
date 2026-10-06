@@ -1,12 +1,15 @@
 """
-Checks Cinema City Poland's public JSON API to see if tickets for one or more
-specific films have gone on sale yet, and sends a Telegram message the moment
-each one does.
+Checks Cinema City Poland's public JSON API to see if a specific film has a
+showing on (or after) a specific target date yet, and sends a Telegram
+message the moment it does.
 
-This uses Cinema City's own "quickbook" data API -- the same API their
-website's JavaScript calls -- which is public, unauthenticated, and well
-documented by other open-source "ticket watcher" projects for Cinema City's
-other country sites (Czech, Hungarian, etc).
+Why target dates matter: a film can go "on sale" for a limited preview
+screening (e.g. Dec 15) well before its wide release date (e.g. Dec 18)
+actually unlocks. Just checking "does this film ID appear anywhere" isn't
+enough -- we need to look at the actual event dates attached to it.
+
+Uses Cinema City's public "quickbook" data API (the same one their website's
+own JavaScript calls).
 """
 
 import os
@@ -16,32 +19,42 @@ from datetime import datetime, timezone
 import requests
 
 # ---- Films to watch ----
-# Add as many as you like. "flag_file" must be unique per film so each one's
-# notification state is tracked independently.
+# target_date: only notify once a showing exists ON or AFTER this date.
+# Set to None to notify as soon as the film has ANY showing at all.
 FILMS = [
     {
         "id": "8105s2r",
         "title": "Diuna: Czesc trzecia",
         "url": "https://www.cinema-city.pl/filmy/diuna-czesc-trzecia/8105s2r",
         "flag_file": "notified_8105s2r.flag",
+        "target_date": "2026-12-18",
     },
     {
         "id": "8222s2r",
         "title": "Clayface",
         "url": "https://www.cinema-city.pl/filmy/clayface/8222s2r",
         "flag_file": "notified_8222s2r.flag",
+        "target_date": None,
     },
 ]
 
-# ---- Shared configuration ----
-TENANT_ID = "10103"  # Cinema City Poland's tenant ID
+TENANT_ID = "10103"
 LANG = "pl_PL"
-CHECK_UNTIL_DATE = "2026-12-25"  # covers both test films; push further out if needed
+CHECK_UNTIL_DATE = "2026-12-25"
 
 API_URL = (
     f"https://www.cinema-city.pl/pl/data-api-service/v1/quickbook/{TENANT_ID}"
     f"/films/until/{CHECK_UNTIL_DATE}?attr=&lang={LANG}"
 )
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
+    "Referer": "https://www.cinema-city.pl/filmy/diuna-czesc-trzecia/8105s2r",
+    "Origin": "https://www.cinema-city.pl",
+}
 
 
 def already_notified(flag_file: str) -> bool:
@@ -59,6 +72,15 @@ def send_telegram(token: str, chat_id: str, text: str) -> None:
     resp.raise_for_status()
 
 
+def extract_event_date(event: dict) -> str:
+    """Try a few likely field names/formats since this API isn't documented."""
+    for key in ("businessDate", "date", "eventDateTime", "startTime", "showTime"):
+        value = event.get(key)
+        if value:
+            return str(value)[:10]  # just the YYYY-MM-DD part
+    return ""
+
+
 def main() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -71,53 +93,49 @@ def main() -> None:
         print("All watched films have already been notified -- nothing to check.")
         return
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
-        "Referer": "https://www.cinema-city.pl/filmy/diuna-czesc-trzecia/8105s2r",
-        "Origin": "https://www.cinema-city.pl",
-    }
-
     print(f"Checking: {API_URL}")
-    resp = requests.get(API_URL, headers=headers, timeout=30)
+    resp = requests.get(API_URL, headers=HEADERS, timeout=30)
     print(f"HTTP status: {resp.status_code}")
-    if resp.status_code != 200:
-        print(f"Response body (first 1000 chars): {resp.text[:1000]}")
     resp.raise_for_status()
-    body = resp.text
-    print(f"Response length: {len(body)} characters")
+
+    try:
+        data = resp.json()
+    except ValueError:
+        print("ERROR: response wasn't valid JSON. First 1000 chars:", file=sys.stderr)
+        print(resp.text[:1000], file=sys.stderr)
+        sys.exit(1)
+
+    body_section = data.get("body", {})
+    events = body_section.get("events", [])
+    print(f"Total events in response: {len(events)}")
 
     for film in films_to_check:
-        # Substring match rather than parsing the JSON schema strictly -- this
-        # API isn't officially documented, so matching the film ID directly
-        # in the raw text is more resilient than depending on exact key names.
-        idx = body.find(film["id"])
-        found = idx != -1
-        print(f"[{film['title']}] Film ID '{film['id']}' found: {found}")
+        matching_events = [e for e in events if e.get("filmId") == film["id"]]
+        dates_found = sorted({extract_event_date(e) for e in matching_events if extract_event_date(e)})
+        print(f"[{film['title']}] Showing dates found: {dates_found}")
+
+        if not matching_events:
+            print(f"[{film['title']}] No events at all yet.")
+            continue
+
+        target_date = film.get("target_date")
+        if target_date:
+            qualifying = [d for d in dates_found if d >= target_date]
+            found = bool(qualifying)
+            print(f"[{film['title']}] Target date {target_date} -- qualifying dates: {qualifying}")
+        else:
+            found = True  # any showing at all counts
 
         if found:
-            # Show the surrounding JSON so we can tell a real showtime entry
-            # (should mention cinemas, dates, event IDs nearby) from a bare
-            # "this film exists" metadata listing with no actual sessions.
-            start = max(0, idx - 300)
-            end = min(len(body), idx + 500)
-            print(f"[{film['title']}] Context around match:\n{body[start:end]}")
-
-            message = f"Tickets for {film['title']} are now on sale!\n{film['url']}"
+            message = f"Tickets for {film['title']} are now on sale!\n{film['url']}\nDates seen: {', '.join(dates_found)}"
             try:
                 send_telegram(token, chat_id, message)
                 mark_notified(film["flag_file"])
                 print(f"[{film['title']}] Notification sent, state saved.")
             except requests.RequestException as e:
-                # Don't let a Telegram failure stop the other films from being
-                # checked, and don't mark as notified if the message never sent.
                 print(f"[{film['title']}] Telegram send FAILED: {e}", file=sys.stderr)
-                if e.response is not None:
-                    print(f"[{film['title']}] Telegram response body: {e.response.text}", file=sys.stderr)
         else:
-            print(f"[{film['title']}] Not yet on sale.")
+            print(f"[{film['title']}] On sale, but not yet for the target date.")
 
 
 if __name__ == "__main__":
