@@ -71,8 +71,20 @@ def main() -> None:
         print("All watched films have already been notified -- nothing to check.")
         return
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
+        "Referer": "https://www.cinema-city.pl/filmy/diuna-czesc-trzecia/8105s2r",
+        "Origin": "https://www.cinema-city.pl",
+    }
+
     print(f"Checking: {API_URL}")
-    resp = requests.get(API_URL, timeout=30)
+    resp = requests.get(API_URL, headers=headers, timeout=30)
+    print(f"HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"Response body (first 1000 chars): {resp.text[:1000]}")
     resp.raise_for_status()
     body = resp.text
     print(f"Response length: {len(body)} characters")
