@@ -1,0 +1,40 @@
+name: Check Dune Ticket Release
+
+on:
+  schedule:
+    # Checks every 5 minutes -- this API is lightweight and public, so
+    # frequent checks are fine (unlike the Facebook attempt).
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  check-tickets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run ticket checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python check_tickets.py
+
+      - name: Commit any new notified-flags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A notified_*.flag
+          git diff --staged --quiet || git commit -m "Mark ticket release(s) as notified"
+          git diff --staged --quiet || git push
