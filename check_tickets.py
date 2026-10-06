@@ -93,14 +93,29 @@ def main() -> None:
         # Substring match rather than parsing the JSON schema strictly -- this
         # API isn't officially documented, so matching the film ID directly
         # in the raw text is more resilient than depending on exact key names.
-        found = film["id"] in body
+        idx = body.find(film["id"])
+        found = idx != -1
         print(f"[{film['title']}] Film ID '{film['id']}' found: {found}")
 
         if found:
+            # Show the surrounding JSON so we can tell a real showtime entry
+            # (should mention cinemas, dates, event IDs nearby) from a bare
+            # "this film exists" metadata listing with no actual sessions.
+            start = max(0, idx - 300)
+            end = min(len(body), idx + 500)
+            print(f"[{film['title']}] Context around match:\n{body[start:end]}")
+
             message = f"Tickets for {film['title']} are now on sale!\n{film['url']}"
-            send_telegram(token, chat_id, message)
-            mark_notified(film["flag_file"])
-            print(f"[{film['title']}] Notification sent, state saved.")
+            try:
+                send_telegram(token, chat_id, message)
+                mark_notified(film["flag_file"])
+                print(f"[{film['title']}] Notification sent, state saved.")
+            except requests.RequestException as e:
+                # Don't let a Telegram failure stop the other films from being
+                # checked, and don't mark as notified if the message never sent.
+                print(f"[{film['title']}] Telegram send FAILED: {e}", file=sys.stderr)
+                if e.response is not None:
+                    print(f"[{film['title']}] Telegram response body: {e.response.text}", file=sys.stderr)
         else:
             print(f"[{film['title']}] Not yet on sale.")
 
