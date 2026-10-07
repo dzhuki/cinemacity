@@ -122,6 +122,27 @@ def main() -> None:
         print("WARNING: no Warsaw cinemas found -- check CITY_FILTER or the cinema list structure.", file=sys.stderr)
         return
 
+    # ---- Sanity check: does parsing work at all? ----
+    # Check a date 3 days from now (should definitely have real showtimes)
+    # at the first Warsaw cinema, and dump the raw structure so we can
+    # confirm or fix our assumptions about the 'films' field shape.
+    from datetime import timedelta
+    sanity_date = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d")
+    sanity_cinema = warsaw_cinemas[0]
+    sanity_cid = sanity_cinema.get("id")
+    print(f"\n==== SANITY CHECK: {sanity_cinema.get('displayName')} (id {sanity_cid}) on {sanity_date} ====")
+    try:
+        sanity_data = api_get(f"film-events/in-cinema/{sanity_cid}/at-date/{sanity_date}?attr=&lang={LANG}")
+        sanity_body = sanity_data.get("body", {})
+        print(f"Top-level keys: {list(sanity_data.keys())}")
+        print(f"body keys: {list(sanity_body.keys()) if isinstance(sanity_body, dict) else type(sanity_body)}")
+        sanity_films = sanity_body.get("films", None) if isinstance(sanity_body, dict) else None
+        print(f"films field type: {type(sanity_films)}")
+        print(f"films field content (first 1500 chars): {str(sanity_films)[:1500]}")
+    except requests.RequestException as e:
+        print(f"Sanity check request failed: {e}")
+    print("==== END SANITY CHECK ====\n")
+
     for film in films_to_check:
         print(f"\n[{film['title']}] Checking target date {film['target_date']} across {len(warsaw_cinemas)} Warsaw cinema(s)...")
         found_at = []
