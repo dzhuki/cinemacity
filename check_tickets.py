@@ -105,9 +105,29 @@ def main() -> None:
         print(resp.text[:1000], file=sys.stderr)
         sys.exit(1)
 
-    body_section = data.get("body", {})
-    events = body_section.get("events", [])
+    # ---- Diagnostics: figure out the REAL shape of this response ----
+    print(f"Top-level keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+    body_section = data.get("body", {}) if isinstance(data, dict) else {}
+    if isinstance(body_section, dict):
+        print(f"'body' keys: {list(body_section.keys())}")
+    elif isinstance(body_section, list):
+        print(f"'body' is a list with {len(body_section)} items")
+        if body_section:
+            print(f"First item's keys (if dict): {list(body_section[0].keys()) if isinstance(body_section[0], dict) else type(body_section[0])}")
+
+    events = body_section.get("events", []) if isinstance(body_section, dict) else []
     print(f"Total events in response: {len(events)}")
+
+    # Raw-text fallback: show exactly what's around each film ID in the
+    # actual response, regardless of where it lives in the JSON structure.
+    for film in films_to_check:
+        idx = resp.text.find(film["id"])
+        if idx != -1:
+            start = max(0, idx - 200)
+            end = min(len(resp.text), idx + 600)
+            print(f"\n[{film['title']}] Raw context around '{film['id']}':\n{resp.text[start:end]}\n")
+        else:
+            print(f"\n[{film['title']}] ID not found anywhere in raw response.\n")
 
     for film in films_to_check:
         matching_events = [e for e in events if e.get("filmId") == film["id"]]
