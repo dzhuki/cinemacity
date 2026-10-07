@@ -35,6 +35,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A notified_*.flag
+          shopt -s nullglob
+          flag_files=(notified_*.flag)
+          if [ ${#flag_files[@]} -gt 0 ]; then
+            git add "${flag_files[@]}"
+          fi
           git diff --staged --quiet || git commit -m "Mark ticket release(s) as notified"
           git diff --staged --quiet || git push
