@@ -40,5 +40,7 @@ jobs:
           if [ ${#flag_files[@]} -gt 0 ]; then
             git add "${flag_files[@]}"
           fi
-          git diff --staged --quiet || git commit -m "Mark ticket release(s) as notified"
-          git diff --staged --quiet || git push
+          if ! git diff --staged --quiet; then
+            git commit -m "Mark ticket release(s) as notified"
+            git push
+          fi
