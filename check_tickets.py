@@ -17,6 +17,7 @@ why it falsely triggered before.)
 
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -42,8 +43,6 @@ FILMS = [
 
 TENANT_ID = "10103"
 LANG = "pl_PL"
-CINEMA_LIST_UNTIL_DATE = "2026-12-25"  # wide enough to catch all active cinemas
-CITY_FILTER = "warszawa"  # case-insensitive substring match on cinema name
 
 BASE = f"https://www.cinema-city.pl/pl/data-api-service/v1/quickbook/{TENANT_ID}"
 
@@ -73,27 +72,48 @@ def send_telegram(token: str, chat_id: str, text: str) -> None:
 
 
 def api_get(path: str) -> dict:
+    """GET with retries -- an occasional 403/429/5xx from a shared cloud IP is
+    usually transient, so wait a bit and try again before giving up."""
     url = f"{BASE}/{path}"
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    delays = [5, 15]  # seconds to wait before 2nd and 3rd attempts
+    for attempt in range(len(delays) + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            if resp.status_code in (403, 429) or resp.status_code >= 500:
+                raise requests.HTTPError(f"{resp.status_code} for {url}", response=resp)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.RequestException, ValueError) as e:
+            if attempt == len(delays):
+                raise
+            print(f"  Request failed ({e}); retrying in {delays[attempt]}s...")
+            time.sleep(delays[attempt])
+
+
+# Warsaw cinemas, found earlier via the cinema-list endpoint. Hardcoded so the
+# run doesn't depend on (and can't fail at) an extra request.
+WARSAW_CINEMAS = [
+    {"id": "1074", "name": "Warszawa - Arkadia"},
+    {"id": "1061", "name": "Warszawa - Bemowo"},
+    {"id": "1096", "name": "Warszawa - Białołęka Galeria Północna"},
+    {"id": "1069", "name": "Warszawa - Janki"},
+    {"id": "1070", "name": "Warszawa - Mokotów"},
+    {"id": "1068", "name": "Warszawa - Promenada"},
+    {"id": "1060", "name": "Warszawa - Sadyba"},
+]
 
 
 def get_warsaw_cinemas() -> list:
-    data = api_get(f"cinemas/with-event/until/{CINEMA_LIST_UNTIL_DATE}?attr=&lang={LANG}")
-    all_cinemas = data.get("body", {}).get("cinemas", [])
-    print(f"Total cinemas found nationally: {len(all_cinemas)}")
-    warsaw = [c for c in all_cinemas if CITY_FILTER in c.get("displayName", c.get("name", "")).lower()]
-    print(f"Warsaw cinemas: {[(c.get('id'), c.get('displayName', c.get('name'))) for c in warsaw]}")
-    return warsaw
+    return WARSAW_CINEMAS
 
 
-def check_film_at_cinema_date(cinema_id: str, date: str, film_id: str) -> bool:
+def check_film_at_cinema_date(cinema_id: str, date: str, film_id: str):
+    """True = film listed, False = checked fine but not listed, None = the check itself failed."""
     try:
         data = api_get(f"film-events/in-cinema/{cinema_id}/at-date/{date}?attr=&lang={LANG}")
-    except requests.RequestException as e:
-        print(f"  Could not check cinema {cinema_id} on {date}: {e}")
-        return False
+    except (requests.RequestException, ValueError) as e:
+        print(f"  Could not check cinema {cinema_id} on {date}: {e}", file=sys.stderr)
+        return None
     films = data.get("body", {}).get("films", {})
     # 'films' here is often a dict keyed by film id, or a list -- handle both
     if isinstance(films, dict):
@@ -118,19 +138,23 @@ def main() -> None:
         return
 
     warsaw_cinemas = get_warsaw_cinemas()
-    if not warsaw_cinemas:
-        print("WARNING: no Warsaw cinemas found -- check CITY_FILTER or the cinema list structure.", file=sys.stderr)
-        return
 
 
+
+    had_total_failure = False
 
     for film in films_to_check:
         print(f"\n[{film['title']}] Checking target date {film['target_date']} across {len(warsaw_cinemas)} Warsaw cinema(s)...")
         found_at = []
+        errors = 0
         for cinema in warsaw_cinemas:
             cid = cinema.get("id")
-            name = cinema.get("displayName", cinema.get("name"))
-            if check_film_at_cinema_date(cid, film["target_date"], film["id"]):
+            name = cinema.get("name")
+            result = check_film_at_cinema_date(cid, film["target_date"], film["id"])
+            if result is None:
+                errors += 1
+                print(f"  ERROR checking {name} (id {cid})")
+            elif result:
                 found_at.append(name)
                 print(f"  FOUND at {name} (id {cid})")
             else:
@@ -147,8 +171,16 @@ def main() -> None:
                 print(f"[{film['title']}] Notification sent, state saved.")
             except requests.RequestException as e:
                 print(f"[{film['title']}] Telegram send FAILED: {e}", file=sys.stderr)
+        elif errors == len(warsaw_cinemas):
+            # Every check failed -- this is NOT "not on sale", it's "couldn't look".
+            print(f"[{film['title']}] ALL checks failed -- could not determine sale status.", file=sys.stderr)
+            had_total_failure = True
         else:
-            print(f"[{film['title']}] Not yet on sale for {film['target_date']} anywhere in Warsaw.")
+            note = f" ({errors} check(s) errored)" if errors else ""
+            print(f"[{film['title']}] Not yet on sale for {film['target_date']} anywhere in Warsaw{note}.")
+
+    if had_total_failure:
+        sys.exit(1)  # make the run show as failed so it doesn't pass silently
 
 
 if __name__ == "__main__":
