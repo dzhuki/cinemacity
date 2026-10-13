@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: check-tickets
+  cancel-in-progress: false
+
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
